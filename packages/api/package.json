@@ -1,0 +1,32 @@
+{
+  "name": "@beam/api",
+  "version": "0.0.1",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "lint": "eslint",
+    "format": "prettier --write \"**/*.{ts,tsx}\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@beam/core": "workspace:*",
+    "@beam/db": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "hono": "^4.7.10",
+    "zod": "^3.25.76"
+  },
+  "peerDependencies": {
+    "drizzle-orm": "0.44.2",
+    "postgres": "3.4.9"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250506.0",
+    "@workspace/eslint-config": "workspace:*",
+    "@workspace/typescript-config": "workspace:*",
+    "eslint": "^9.39.2",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.19.1"
+  }
+}

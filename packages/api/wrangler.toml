@@ -1,0 +1,10 @@
+name = "beam-api"
+main = "src/index.ts"
+compatibility_date = "2025-05-06"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "production"
+SUPABASE_URL = "https://zdzknambcbtgwgkxnhrl.supabase.co"
+
+# Secrets are set via: wrangler secret put DATABASE_URL, etc.
