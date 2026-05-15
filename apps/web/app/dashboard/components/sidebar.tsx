@@ -11,6 +11,7 @@ import {
   Plugs,
   Gear,
   SignOut,
+  FileText,
 } from '@phosphor-icons/react'
 
 interface SidebarProps {
@@ -21,6 +22,7 @@ interface SidebarProps {
 const navItems = [
   { href: '/dashboard', label: 'Overview', icon: House },
   { href: '/dashboard/context', label: 'Context', icon: Brain },
+  { href: '/dashboard/reports', label: 'Reports', icon: FileText },
   { href: '/dashboard/tickets', label: 'Tickets', icon: Ticket },
   { href: '/dashboard/integrations', label: 'Integrations', icon: Plugs },
   { href: '/dashboard/settings', label: 'Settings', icon: Gear },

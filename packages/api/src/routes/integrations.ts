@@ -64,9 +64,8 @@ integrationsRoutes.get('/', async (c) => {
   })
 })
 
-// POST /api/workspaces/:workspaceId/integrations/:provider/connect - Start OAuth flow
-integrationsRoutes.post('/:provider/connect', async (c) => {
-  const workspaceId = getWorkspaceId(c)
+// GET /api/integrations/oauth-config/:provider - Get OAuth config for client-side flow
+integrationsRoutes.get('/oauth-config/:provider', async (c) => {
   const provider = c.req.param('provider') as OAuthProvider
 
   if (!OAUTH_PROVIDERS[provider]) {
@@ -74,49 +73,31 @@ integrationsRoutes.post('/:provider/connect', async (c) => {
   }
 
   const config = OAUTH_PROVIDERS[provider]
-
-  // Get OAuth client credentials from environment
-  const clientIdKey = `${provider.toUpperCase()}_CLIENT_ID` as keyof Env
-  const clientId = c.env[clientIdKey]
-  const redirectUri = `${c.env.SUPABASE_URL}/api/workspaces/${workspaceId}/integrations/${provider}/callback`
+  const clientId = c.env.GOOGLE_CLIENT_ID
 
   if (!clientId) {
     throw new IntegrationError(provider, 'OAuth not configured for this provider')
   }
 
-  // Build OAuth URL
-  const params = new URLSearchParams()
-  params.set('client_id', clientId)
-  params.set('redirect_uri', redirectUri)
-  params.set('response_type', 'code')
-  params.set('scope', config.scopes.join(' '))
-  params.set('state', workspaceId)
-  params.set('access_type', 'offline')
-  params.set('prompt', 'consent')
-
-  const authUrl = `${config.authUrl}?${params.toString()}`
-
-  return c.json({ authUrl })
+  return c.json({
+    authUrl: config.authUrl,
+    clientId,
+    scopes: config.scopes,
+  })
 })
 
-// GET /api/workspaces/:workspaceId/integrations/:provider/callback - OAuth callback
-integrationsRoutes.get('/:provider/callback', async (c) => {
+// POST /api/workspaces/:workspaceId/integrations/:provider/callback - Exchange code for tokens (called by frontend)
+integrationsRoutes.post('/:provider/callback', async (c) => {
   const workspaceId = getWorkspaceId(c)
   const provider = c.req.param('provider') as OAuthProvider
-  const code = c.req.query('code')
-  const state = c.req.query('state')
-  const error = c.req.query('error')
+  const body = await c.req.json() as { code: string; redirectUri: string }
 
-  if (error) {
-    throw new IntegrationError(provider, `OAuth error: ${error}`)
-  }
-
-  if (!code) {
+  if (!body.code) {
     throw new ValidationError('Missing authorization code')
   }
 
-  if (state !== workspaceId) {
-    throw new ValidationError('Invalid state parameter')
+  if (!body.redirectUri) {
+    throw new ValidationError('Missing redirect URI')
   }
 
   const config = OAUTH_PROVIDERS[provider]
@@ -124,11 +105,8 @@ integrationsRoutes.get('/:provider/callback', async (c) => {
     throw new ValidationError(`Unsupported provider: ${provider}`)
   }
 
-  const clientIdKey = `${provider.toUpperCase()}_CLIENT_ID` as keyof Env
-  const clientSecretKey = `${provider.toUpperCase()}_CLIENT_SECRET` as keyof Env
-  const clientId = c.env[clientIdKey]
-  const clientSecret = c.env[clientSecretKey]
-  const redirectUri = `${c.env.SUPABASE_URL}/api/workspaces/${workspaceId}/integrations/${provider}/callback`
+  const clientId = c.env.GOOGLE_CLIENT_ID
+  const clientSecret = c.env.GOOGLE_CLIENT_SECRET
 
   if (!clientId || !clientSecret) {
     throw new IntegrationError(provider, 'OAuth not configured')
@@ -144,8 +122,8 @@ integrationsRoutes.get('/:provider/callback', async (c) => {
     body: new URLSearchParams({
       client_id: clientId,
       client_secret: clientSecret,
-      code,
-      redirect_uri: redirectUri,
+      code: body.code,
+      redirect_uri: body.redirectUri,
       grant_type: 'authorization_code',
     }),
   })
@@ -178,7 +156,6 @@ integrationsRoutes.get('/:provider/callback', async (c) => {
   let integrationId: string
 
   if (existing) {
-    // Update existing integration
     integrationId = existing.id
     await db
       .update(integrations)
@@ -191,7 +168,6 @@ integrationsRoutes.get('/:provider/callback', async (c) => {
       })
       .where(eq(integrations.id, existing.id))
 
-    // Update credentials
     await db
       .update(integrationCredentials)
       .set({
@@ -201,13 +177,12 @@ integrationsRoutes.get('/:provider/callback', async (c) => {
       })
       .where(eq(integrationCredentials.integrationId, existing.id))
   } else {
-    // Create new integration
     const [newIntegration] = await db
       .insert(integrations)
       .values({
         workspaceId,
         provider,
-        scopes: [...config.scopes], // Convert readonly to mutable array
+        scopes: [...config.scopes],
         isEnabled: true,
         tokenExpiresAt: tokens.expires_in
           ? new Date(Date.now() + tokens.expires_in * 1000)
@@ -221,7 +196,6 @@ integrationsRoutes.get('/:provider/callback', async (c) => {
 
     integrationId = newIntegration.id
 
-    // Store credentials
     await db.insert(integrationCredentials).values({
       integrationId: newIntegration.id,
       accessToken: tokens.access_token,
@@ -229,8 +203,7 @@ integrationsRoutes.get('/:provider/callback', async (c) => {
     })
   }
 
-  // Redirect back to dashboard
-  return c.redirect(`/workspaces/${workspaceId}/settings/integrations?connected=${provider}`)
+  return c.json({ success: true, integrationId })
 })
 
 // DELETE /api/workspaces/:workspaceId/integrations/:id - Disconnect integration

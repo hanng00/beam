@@ -1,8 +1,9 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
-import { TicketList } from './components/ticket-list'
+import { ReportList } from './components/report-list'
+import { NewReportButton } from './components/new-report-button'
 
-export default async function TicketsPage() {
+export default async function ReportsPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
@@ -20,26 +21,28 @@ export default async function TicketsPage() {
     redirect('/dashboard')
   }
 
-  const { data: tickets } = await supabase
-    .from('tickets')
-    .select('*')
+  const { data: integrations } = await supabase
+    .from('integrations')
+    .select('provider')
     .eq('workspace_id', membership.workspace_id)
-    .order('created_at', { ascending: false })
+
+  const connectedIntegrations = integrations?.map(i => i.provider) || []
 
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold">Tickets</h1>
+          <h1 className="text-2xl font-bold">Reports</h1>
           <p className="text-muted-foreground mt-1">
-            Track and manage marketing opportunities and tasks.
+            Automated AI-powered analysis of your marketing data.
           </p>
         </div>
+        <NewReportButton workspaceId={membership.workspace_id} />
       </div>
 
-      <TicketList 
-        tickets={tickets || []} 
-        workspaceId={membership.workspace_id} 
+      <ReportList 
+        workspaceId={membership.workspace_id}
+        integrations={connectedIntegrations}
       />
     </div>
   )
