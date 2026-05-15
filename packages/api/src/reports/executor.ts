@@ -1,5 +1,7 @@
 import type { ReportOutput, ReportTemplateId } from '@beam/core/schemas'
 import { getTemplate, buildPrompt } from './templates'
+import { executeAgent } from '../agents/executor'
+import '../agents/providers'
 
 export interface ExecutionContext {
   workspaceId: string
@@ -9,30 +11,83 @@ export interface ExecutionContext {
   integrations: string[]
   workspaceContext: string
   integrationData: Record<string, unknown>
+  databaseUrl?: string
 }
 
 export interface ExecutorDependencies {
   callLLM?: (prompt: string) => Promise<string>
 }
 
-const defaultDependencies: ExecutorDependencies = {
-  callLLM: async (_prompt: string) => {
-    // Stub implementation - returns mock structured output
-    // In production, this would call Claude API
-    return JSON.stringify({
-      summary: 'Mock analysis complete',
-      findings: [],
-      rawMarkdown: '# Mock Report\n\nThis is a placeholder report.',
-    })
-  },
-}
-
+/**
+ * Execute a report using the agent orchestration system.
+ * Delegates to the seo_reporter agent which has access to all necessary tools.
+ */
 export async function executeReport(
   context: ExecutionContext,
-  deps: ExecutorDependencies = defaultDependencies
+  deps: ExecutorDependencies = {}
 ): Promise<ReportOutput> {
   const { templateId, customPrompt, workspaceContext, integrationData } = context
-  const callLLM = deps.callLLM ?? defaultDependencies.callLLM!
+
+  // If a custom LLM caller is provided (e.g. in tests), use the legacy path
+  if (deps.callLLM) {
+    return executeLegacy(context, deps.callLLM)
+  }
+
+  // Build the input prompt for the agent
+  let agentInput: string
+
+  if (templateId && templateId !== 'custom') {
+    const template = getTemplate(templateId)
+    if (!template) {
+      throw new Error(`Unknown template: ${templateId}`)
+    }
+
+    const templateContext: Record<string, string> = {
+      context: workspaceContext,
+    }
+
+    if (integrationData.searchConsoleData) {
+      templateContext.searchConsoleData = JSON.stringify(integrationData.searchConsoleData, null, 2)
+    }
+    if (integrationData.analyticsData) {
+      templateContext.analyticsData = JSON.stringify(integrationData.analyticsData, null, 2)
+    }
+    if (integrationData.funnelData) {
+      templateContext.funnelData = JSON.stringify(integrationData.funnelData, null, 2)
+    }
+
+    agentInput = buildPrompt(template, templateContext)
+  } else if (customPrompt) {
+    agentInput = `## Context\n${workspaceContext}\n\n## Custom Analysis Request\n${customPrompt}`
+  } else {
+    throw new Error('Either templateId or customPrompt must be provided')
+  }
+
+  agentInput += `\n\nIMPORTANT: Respond with valid JSON in this format:
+{
+  "summary": "executive summary string",
+  "findings": [{ "type": "opportunity|issue|insight", "title": "...", "description": "...", "potential": "...", "confidence": 0-100, "priority": "low|medium|high|urgent", "suggestedAction": "..." }],
+  "rawMarkdown": "full markdown report"
+}`
+
+  const result = await executeAgent(
+    {
+      workspaceId: context.workspaceId,
+      agentId: 'seo_reporter',
+      sessionId: `report-${context.reportId}-${Date.now()}`,
+      input: agentInput,
+    },
+    { databaseUrl: context.databaseUrl }
+  )
+
+  return parseReportOutput(result.text)
+}
+
+async function executeLegacy(
+  context: ExecutionContext,
+  callLLM: (prompt: string) => Promise<string>
+): Promise<ReportOutput> {
+  const { templateId, customPrompt, workspaceContext, integrationData } = context
 
   let prompt: string
 
@@ -46,7 +101,6 @@ export async function executeReport(
       context: workspaceContext,
     }
 
-    // Map integration data to template placeholders
     if (integrationData.searchConsoleData) {
       templateContext.searchConsoleData = JSON.stringify(integrationData.searchConsoleData, null, 2)
     }
@@ -64,18 +118,15 @@ export async function executeReport(
     throw new Error('Either templateId or customPrompt must be provided')
   }
 
-  // Call LLM (stubbed for now)
   const rawResponse = await callLLM(prompt)
-
-  // Parse response - in production, use structured output from Claude
-  const output = parseReportOutput(rawResponse)
-
-  return output
+  return parseReportOutput(rawResponse)
 }
 
 function parseReportOutput(rawResponse: string): ReportOutput {
   try {
-    const parsed = JSON.parse(rawResponse)
+    const jsonMatch = rawResponse.match(/\{[\s\S]*\}/)
+    const jsonStr = jsonMatch ? jsonMatch[0] : rawResponse
+    const parsed = JSON.parse(jsonStr)
     return {
       summary: parsed.summary ?? 'Analysis complete',
       findings: Array.isArray(parsed.findings) ? parsed.findings : [],
@@ -83,7 +134,6 @@ function parseReportOutput(rawResponse: string): ReportOutput {
       tokensUsed: parsed.tokensUsed,
     }
   } catch {
-    // If not JSON, treat as raw markdown
     return {
       summary: 'Analysis complete',
       findings: [],

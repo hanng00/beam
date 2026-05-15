@@ -13,10 +13,13 @@
     "test:watch": "bun test --watch"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.78",
     "@beam/core": "workspace:*",
     "@beam/db": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "ai": "^6.0.183",
     "hono": "^4.7.10",
+    "minimatch": "^10.2.5",
     "zod": "^3.25.76"
   },
   "peerDependencies": {
@@ -25,6 +28,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250506.0",
+    "@types/minimatch": "^6.0.0",
     "@workspace/eslint-config": "workspace:*",
     "@workspace/typescript-config": "workspace:*",
     "eslint": "^9.39.2",

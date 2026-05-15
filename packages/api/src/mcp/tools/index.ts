@@ -8,12 +8,14 @@ import type { ToolContext } from './types'
 import { contextTools, executeGetContext, executeUpdateContext } from './context'
 import { ticketTools, executeListTickets, executeCreateTicket, executeUpdateTicket } from './tickets'
 import { integrationTools, executeGetIntegrations, executeQueryGSC, executeQueryGA } from './integrations'
+import { agentTools, executeListAgents, executeRunAgent } from './agents'
 
 // Aggregate all tools
 export const tools: Tool[] = [
   ...contextTools,
   ...ticketTools,
   ...integrationTools,
+  ...agentTools,
 ]
 
 // Tool executor registry
@@ -29,6 +31,9 @@ const executors: Record<string, (args: unknown, ctx: ToolContext) => Promise<unk
   get_integrations: executeGetIntegrations,
   query_google_search_console: executeQueryGSC,
   query_google_analytics: executeQueryGA,
+  // Agent tools
+  list_available_agents: executeListAgents,
+  run_agent: executeRunAgent,
 }
 
 /**
