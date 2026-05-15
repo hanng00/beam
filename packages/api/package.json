@@ -8,7 +8,9 @@
     "deploy": "wrangler deploy",
     "lint": "eslint",
     "format": "prettier --write \"**/*.{ts,tsx}\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "test:watch": "bun test --watch"
   },
   "dependencies": {
     "@beam/core": "workspace:*",

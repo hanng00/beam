@@ -6,7 +6,9 @@
   "scripts": {
     "lint": "eslint",
     "format": "prettier --write \"**/*.{ts,tsx}\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "test:watch": "bun test --watch"
   },
   "dependencies": {
     "zod": "^3.25.76"

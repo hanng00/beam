@@ -7,7 +7,10 @@
     "dev": "turbo dev",
     "lint": "turbo lint",
     "format": "turbo format",
-    "typecheck": "turbo typecheck"
+    "typecheck": "turbo typecheck",
+    "test": "turbo test",
+    "test:core": "bun test --cwd packages/core",
+    "test:api": "bun test --cwd packages/api"
   },
   "dependencies": {
     "@hono/swagger-ui": "^0.6.1",
