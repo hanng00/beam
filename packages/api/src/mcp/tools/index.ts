@@ -7,7 +7,15 @@ import type { ToolContext } from './types'
 // Import tool definitions and executors
 import { contextTools, executeGetContext, executeUpdateContext } from './context'
 import { ticketTools, executeListTickets, executeCreateTicket, executeUpdateTicket } from './tickets'
-import { integrationTools, executeGetIntegrations, executeQueryGSC, executeQueryGA } from './integrations'
+import { 
+  integrationTools, 
+  executeGetIntegrations, 
+  executeQueryGSC, 
+  executeQueryGA,
+  executeListGSCSites,
+  executeListGAProperties,
+  executeConfigureIntegration,
+} from './integrations'
 import { agentTools, executeListAgents, executeRunAgent } from './agents'
 
 // Aggregate all tools
@@ -29,6 +37,9 @@ const executors: Record<string, (args: unknown, ctx: ToolContext) => Promise<unk
   update_ticket: executeUpdateTicket,
   // Integration tools
   get_integrations: executeGetIntegrations,
+  list_gsc_sites: executeListGSCSites,
+  list_ga_properties: executeListGAProperties,
+  configure_integration: executeConfigureIntegration,
   query_google_search_console: executeQueryGSC,
   query_google_analytics: executeQueryGA,
   // Agent tools

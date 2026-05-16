@@ -24,7 +24,17 @@ app.use('*', logger())
 app.use(
   '*',
   cors({
-    origin: ['http://localhost:3000', 'https://app.beam.dev'],
+    origin: (origin) => {
+      const allowed = [
+        'http://localhost:3000',
+        'https://app.beam.dev',
+        'https://beam-web-sand.vercel.app',
+      ]
+      if (allowed.includes(origin)) return origin
+      // Allow all *.vercel.app preview deploys
+      if (origin.endsWith('.vercel.app')) return origin
+      return allowed[0]
+    },
     credentials: true,
   })
 )

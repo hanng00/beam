@@ -24,10 +24,16 @@ export default async function IntegrationsPage() {
 
   const { data: integrations } = await supabase
     .from('integrations')
-    .select('*')
+    .select('id, provider, config, is_enabled')
     .eq('workspace_id', membership.workspace_id)
 
-  const connectedProviders = new Set(integrations?.map((i) => i.provider) || [])
+  // Transform to match expected interface
+  const connectedIntegrations = (integrations || []).map((i) => ({
+    id: i.id,
+    provider: i.provider,
+    config: i.config as { siteUrl?: string; propertyId?: string; propertyName?: string } | null,
+    isEnabled: i.is_enabled,
+  }))
 
   // Get Google Client ID from env (public)
   const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || null
@@ -43,7 +49,7 @@ export default async function IntegrationsPage() {
 
       <IntegrationList
         workspaceId={membership.workspace_id}
-        connectedProviders={connectedProviders}
+        connectedIntegrations={connectedIntegrations}
         googleClientId={googleClientId}
       />
 

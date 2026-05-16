@@ -1,14 +1,26 @@
-import { pgTable, uuid, text, timestamp, boolean } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, text, timestamp, boolean, jsonb } from 'drizzle-orm/pg-core'
 import { workspaces } from './workspaces'
+
+// Provider-specific configuration types
+export type IntegrationConfig = {
+  // Google Search Console
+  siteUrl?: string // e.g., "https://example.com" or "sc-domain:example.com"
+  // Google Analytics
+  propertyId?: string // e.g., "properties/123456789"
+  propertyName?: string
+  // Generic
+  [key: string]: unknown
+}
 
 export const integrations = pgTable('integrations', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id')
     .notNull()
     .references(() => workspaces.id, { onDelete: 'cascade' }),
-  provider: text('provider').notNull(), // 'google_ads' | 'meta_ads' | etc.
+  provider: text('provider').notNull(), // 'google_search_console' | 'google_analytics' | etc.
   accountId: text('account_id'),
   accountName: text('account_name'),
+  config: jsonb('config').$type<IntegrationConfig>(), // Provider-specific settings
   scopes: text('scopes').array(),
   isEnabled: boolean('is_enabled').notNull().default(true),
   tokenExpiresAt: timestamp('token_expires_at'),
