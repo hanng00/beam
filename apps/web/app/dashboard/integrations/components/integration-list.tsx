@@ -32,10 +32,6 @@ const OAUTH_CONFIG = {
       'https://www.googleapis.com/auth/analytics.manage.users.readonly',
     ],
   },
-  google_ads: {
-    authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-    scopes: ['https://www.googleapis.com/auth/adwords.readonly'],
-  },
 } as const
 
 type IntegrationConfig = {
@@ -69,14 +65,15 @@ const availableIntegrations = [
     configKey: 'propertyId' as const,
     configLabel: 'Property',
   },
-  {
-    id: 'google_ads' as const,
-    name: 'Google Ads',
-    description: 'Campaign performance, ad spend, conversions, and keyword data',
-    icon: GoogleLogo,
-    configKey: 'customerId' as const,
-    configLabel: 'Account',
-  },
+  // Google Ads integration disabled - requires developer token approval
+  // {
+  //   id: 'google_ads' as const,
+  //   name: 'Google Ads',
+  //   description: 'Campaign performance, ad spend, conversions, and keyword data',
+  //   icon: GoogleLogo,
+  //   configKey: 'customerId' as const,
+  //   configLabel: 'Account',
+  // },
   {
     id: 'github' as const,
     name: 'GitHub',

@@ -19,11 +19,12 @@ const OAUTH_PROVIDERS = {
     tokenUrl: 'https://oauth2.googleapis.com/token',
     scopes: ['https://www.googleapis.com/auth/analytics.readonly'],
   },
-  google_ads: {
-    authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-    tokenUrl: 'https://oauth2.googleapis.com/token',
-    scopes: ['https://www.googleapis.com/auth/adwords'],
-  },
+  // Google Ads disabled - requires developer token approval from Google
+  // google_ads: {
+  //   authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+  //   tokenUrl: 'https://oauth2.googleapis.com/token',
+  //   scopes: ['https://www.googleapis.com/auth/adwords'],
+  // },
   github: {
     authUrl: 'https://github.com/login/oauth/authorize',
     tokenUrl: 'https://github.com/login/oauth/access_token',
