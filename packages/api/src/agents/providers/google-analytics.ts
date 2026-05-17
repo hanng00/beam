@@ -2,37 +2,8 @@ import { tool } from 'ai'
 import { z } from 'zod'
 import type { ToolProvider, ProviderContext } from '../interfaces'
 import { toolRegistry } from '../registry'
-
-const GA4_API_BASE = 'https://analyticsdata.googleapis.com/v1beta'
-
-interface GaResponse {
-  rows?: unknown[]
-  totals?: unknown
-  metadata?: unknown
-  rowCount?: number
-}
-
-async function gaFetch(
-  endpoint: string,
-  accessToken: string,
-  body?: unknown
-): Promise<GaResponse> {
-  const res = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  })
-
-  if (!res.ok) {
-    const error = await res.text()
-    throw new Error(`GA4 API error (${res.status}): ${error}`)
-  }
-
-  return res.json() as Promise<GaResponse>
-}
+import { AnalyticsClient } from '../../integrations/google'
+import type { GoogleCredentials, GoogleClientConfig } from '../../integrations/google'
 
 const googleAnalyticsProvider: ToolProvider = {
   id: 'google_analytics',
@@ -45,6 +16,23 @@ const googleAnalyticsProvider: ToolProvider = {
   },
 
   getTools(ctx: ProviderContext) {
+    const createClient = async (): Promise<AnalyticsClient> => {
+      const creds = await ctx.getCredentials()
+      if (!creds) throw new Error('Google Analytics credentials not found')
+
+      const credentials: GoogleCredentials = {
+        accessToken: creds.accessToken ?? '',
+        refreshToken: creds.refreshToken ?? '',
+      }
+
+      const config: GoogleClientConfig = {
+        clientId: creds.clientId ?? '',
+        clientSecret: creds.clientSecret ?? '',
+      }
+
+      return new AnalyticsClient(credentials, config)
+    }
+
     return {
       get_traffic_overview: tool({
         description:
@@ -57,38 +45,22 @@ const googleAnalyticsProvider: ToolProvider = {
           compareEndDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Comparison end date'),
         }),
         execute: async (params) => {
-          const creds = await ctx.getCredentials()
-          if (!creds) throw new Error('Google Analytics credentials not found')
-          const accessToken = creds.accessToken ?? ''
+          const client = await createClient()
 
-          const dateRanges: Array<{ startDate: string; endDate: string }> = [
+          const compareDateRange = params.compareStartDate && params.compareEndDate
+            ? { startDate: params.compareStartDate, endDate: params.compareEndDate }
+            : undefined
+
+          const result = await client.getTrafficOverview(
+            params.propertyId,
             { startDate: params.startDate, endDate: params.endDate },
-          ]
-
-          if (params.compareStartDate && params.compareEndDate) {
-            dateRanges.push({ startDate: params.compareStartDate, endDate: params.compareEndDate })
-          }
-
-          const data = await gaFetch(
-            `${GA4_API_BASE}/${params.propertyId}:runReport`,
-            accessToken,
-            {
-              dateRanges,
-              metrics: [
-                { name: 'sessions' },
-                { name: 'totalUsers' },
-                { name: 'screenPageViews' },
-                { name: 'bounceRate' },
-                { name: 'averageSessionDuration' },
-              ],
-              dimensions: [{ name: 'date' }],
-            }
+            compareDateRange
           )
 
           return {
-            rows: data.rows ?? [],
-            totals: data.totals ?? null,
-            metadata: data.metadata ?? null,
+            rows: result.rows,
+            totals: result.totals ?? null,
+            metadata: result.metadata ?? null,
           }
         },
       }),
@@ -106,31 +78,16 @@ const googleAnalyticsProvider: ToolProvider = {
             .describe('Metric to sort by'),
         }),
         execute: async (params) => {
-          const creds = await ctx.getCredentials()
-          if (!creds) throw new Error('Google Analytics credentials not found')
-          const accessToken = creds.accessToken ?? ''
-
-          const data = await gaFetch(
-            `${GA4_API_BASE}/${params.propertyId}:runReport`,
-            accessToken,
-            {
-              dateRanges: [{ startDate: params.startDate, endDate: params.endDate }],
-              metrics: [
-                { name: 'sessions' },
-                { name: 'screenPageViews' },
-                { name: 'totalUsers' },
-                { name: 'bounceRate' },
-                { name: 'averageSessionDuration' },
-              ],
-              dimensions: [{ name: 'pagePath' }],
-              orderBys: [{ metric: { metricName: params.orderBy }, desc: true }],
-              limit: params.limit,
-            }
+          const client = await createClient()
+          const result = await client.getTopPages(
+            params.propertyId,
+            { startDate: params.startDate, endDate: params.endDate },
+            { limit: params.limit, orderBy: params.orderBy }
           )
 
           return {
-            pages: data.rows ?? [],
-            rowCount: data.rowCount ?? 0,
+            pages: result.rows,
+            rowCount: result.rowCount,
           }
         },
       }),
@@ -147,34 +104,17 @@ const googleAnalyticsProvider: ToolProvider = {
             .describe('Dimensions to group by'),
         }),
         execute: async (params) => {
-          const creds = await ctx.getCredentials()
-          if (!creds) throw new Error('Google Analytics credentials not found')
-          const accessToken = creds.accessToken ?? ''
-
-          const data = await gaFetch(
-            `${GA4_API_BASE}/${params.propertyId}:runReport`,
-            accessToken,
-            {
-              dateRanges: [{ startDate: params.startDate, endDate: params.endDate }],
-              metrics: [
-                { name: 'conversions' },
-                { name: 'totalRevenue' },
-                { name: 'sessions' },
-              ],
-              dimensions: params.dimensions.map((d: string) => ({ name: d })),
-              dimensionFilter: {
-                filter: {
-                  fieldName: 'isConversionEvent',
-                  stringFilter: { value: 'true' },
-                },
-              },
-            }
+          const client = await createClient()
+          const result = await client.getConversions(
+            params.propertyId,
+            { startDate: params.startDate, endDate: params.endDate },
+            params.dimensions
           )
 
           return {
-            conversions: data.rows ?? [],
-            totals: data.totals ?? null,
-            rowCount: data.rowCount ?? 0,
+            conversions: result.rows,
+            totals: result.totals ?? null,
+            rowCount: result.rowCount,
           }
         },
       }),

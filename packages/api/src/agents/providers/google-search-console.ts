@@ -2,38 +2,8 @@ import { tool } from 'ai'
 import { z } from 'zod'
 import type { ToolProvider, ProviderContext } from '../interfaces'
 import { toolRegistry } from '../registry'
-
-const GSC_API_BASE = 'https://www.googleapis.com/webmasters/v3'
-const SEARCH_ANALYTICS_API = 'https://searchconsole.googleapis.com/webmasters/v3'
-
-interface GscResponse {
-  rows?: unknown[]
-  responseAggregationType?: string
-  sitemap?: unknown[]
-  inspectionResult?: unknown
-}
-
-async function gscFetch(
-  endpoint: string,
-  accessToken: string,
-  options?: { method?: string; body?: unknown }
-): Promise<GscResponse> {
-  const res = await fetch(endpoint, {
-    method: options?.method ?? 'GET',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: options?.body ? JSON.stringify(options.body) : undefined,
-  })
-
-  if (!res.ok) {
-    const error = await res.text()
-    throw new Error(`GSC API error (${res.status}): ${error}`)
-  }
-
-  return res.json() as Promise<GscResponse>
-}
+import { SearchConsoleClient } from '../../integrations/google'
+import type { GoogleCredentials, GoogleClientConfig } from '../../integrations/google'
 
 const googleSearchConsoleProvider: ToolProvider = {
   id: 'google_search_console',
@@ -46,6 +16,23 @@ const googleSearchConsoleProvider: ToolProvider = {
   },
 
   getTools(ctx: ProviderContext) {
+    const createClient = async (): Promise<SearchConsoleClient> => {
+      const creds = await ctx.getCredentials()
+      if (!creds) throw new Error('Google Search Console credentials not found')
+
+      const credentials: GoogleCredentials = {
+        accessToken: creds.accessToken ?? '',
+        refreshToken: creds.refreshToken ?? '',
+      }
+
+      const config: GoogleClientConfig = {
+        clientId: creds.clientId ?? '',
+        clientSecret: creds.clientSecret ?? '',
+      }
+
+      return new SearchConsoleClient(credentials, config)
+    }
+
     return {
       get_search_performance: tool({
         description:
@@ -75,28 +62,19 @@ const googleSearchConsoleProvider: ToolProvider = {
             .describe('Filters to apply'),
         }),
         execute: async (params) => {
-          const creds = await ctx.getCredentials()
-          if (!creds) throw new Error('Google Search Console credentials not found')
-          const accessToken = creds.accessToken ?? ''
-
-          const data = await gscFetch(
-            `${SEARCH_ANALYTICS_API}/sites/${encodeURIComponent(params.siteUrl)}/searchAnalytics/query`,
-            accessToken,
-            {
-              method: 'POST',
-              body: {
-                startDate: params.startDate,
-                endDate: params.endDate,
-                dimensions: params.dimensions,
-                rowLimit: params.rowLimit,
-                dimensionFilterGroups: params.dimensionFilterGroups,
-              },
-            }
-          )
+          const client = await createClient()
+          const result = await client.getSearchPerformance({
+            siteUrl: params.siteUrl,
+            startDate: params.startDate,
+            endDate: params.endDate,
+            dimensions: params.dimensions,
+            rowLimit: params.rowLimit,
+            dimensionFilterGroups: params.dimensionFilterGroups,
+          })
 
           return {
-            rows: data.rows ?? [],
-            responseAggregationType: data.responseAggregationType ?? null,
+            rows: result.rows,
+            responseAggregationType: result.responseAggregationType,
           }
         },
       }),
@@ -109,24 +87,14 @@ const googleSearchConsoleProvider: ToolProvider = {
           inspectionUrl: z.string().describe('URL to inspect'),
         }),
         execute: async (params) => {
-          const creds = await ctx.getCredentials()
-          if (!creds) throw new Error('Google Search Console credentials not found')
-          const accessToken = creds.accessToken ?? ''
-
-          const data = await gscFetch(
-            'https://searchconsole.googleapis.com/v1/urlInspection/index:inspect',
-            accessToken,
-            {
-              method: 'POST',
-              body: {
-                inspectionUrl: params.inspectionUrl,
-                siteUrl: params.siteUrl,
-              },
-            }
-          )
+          const client = await createClient()
+          const result = await client.getIndexStatus({
+            siteUrl: params.siteUrl,
+            inspectionUrl: params.inspectionUrl,
+          })
 
           return {
-            inspectionResult: data.inspectionResult ?? null,
+            inspectionResult: result.inspectionResult,
           }
         },
       }),
@@ -137,17 +105,11 @@ const googleSearchConsoleProvider: ToolProvider = {
           siteUrl: z.string().describe('Site URL as registered in GSC'),
         }),
         execute: async (params) => {
-          const creds = await ctx.getCredentials()
-          if (!creds) throw new Error('Google Search Console credentials not found')
-          const accessToken = creds.accessToken ?? ''
-
-          const data = await gscFetch(
-            `${GSC_API_BASE}/sites/${encodeURIComponent(params.siteUrl)}/sitemaps`,
-            accessToken
-          )
+          const client = await createClient()
+          const result = await client.listSitemaps(params.siteUrl)
 
           return {
-            sitemaps: data.sitemap ?? [],
+            sitemaps: result.sitemaps,
           }
         },
       }),

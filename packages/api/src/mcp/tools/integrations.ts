@@ -5,10 +5,14 @@ import { integrationProviders } from '@beam/core/schemas'
 import { IntegrationError } from '@beam/core/utils'
 import { createMcpTool, validateArgs } from '../tool-builder'
 import type { ToolContext } from './types'
-
-const SEARCH_ANALYTICS_API = 'https://searchconsole.googleapis.com/webmasters/v3'
-const GA4_API_BASE = 'https://analyticsdata.googleapis.com/v1beta'
-const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
+import {
+  SearchConsoleClient,
+  AnalyticsClient,
+  AdsClient,
+  GoogleApiError,
+  TokenRefreshError,
+} from '../../integrations/google'
+import type { GoogleCredentials, GoogleClientConfig, AdsClientConfig } from '../../integrations/google'
 
 // Zod schemas for integration tools
 const getIntegrationsArgsSchema = z.object({}).describe('No arguments required')
@@ -114,40 +118,26 @@ export const integrationTools = [
   ),
 ]
 
-// Refresh Google OAuth token
-async function refreshGoogleToken(
-  refreshToken: string,
-  clientId: string,
-  clientSecret: string
-): Promise<{ accessToken: string; expiresIn: number }> {
-  const response = await fetch(GOOGLE_TOKEN_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_id: clientId,
-      client_secret: clientSecret,
-      refresh_token: refreshToken,
-      grant_type: 'refresh_token',
-    }),
-  })
+type GoogleProvider = 'google_search_console' | 'google_analytics' | 'google_ads'
 
-  if (!response.ok) {
-    const error = await response.text()
-    throw new Error(`Token refresh failed: ${error}`)
-  }
-
-  const data = await response.json() as { access_token: string; expires_in: number }
-  return {
-    accessToken: data.access_token,
-    expiresIn: data.expires_in,
-  }
+interface CredentialsResult {
+  credentials: GoogleCredentials
+  config: GoogleClientConfig
+  integrationConfig: Record<string, unknown> | null
+  credentialsId: string
 }
 
-// Helper to get OAuth credentials for a provider (with auto-refresh)
-async function getOAuthCredentials(
+interface AdsCredentialsResult extends CredentialsResult {
+  config: AdsClientConfig
+}
+
+/**
+ * Get OAuth credentials and client config for a Google provider
+ */
+async function getGoogleCredentials(
   ctx: ToolContext,
-  provider: 'google_search_console' | 'google_analytics' | 'google_ads'
-): Promise<{ accessToken: string; config: Record<string, unknown> | null }> {
+  provider: GoogleProvider
+): Promise<CredentialsResult> {
   const { db, workspaceId, env } = ctx
 
   const [integration] = await db
@@ -189,31 +179,80 @@ async function getOAuthCredentials(
     )
   }
 
-  // Always refresh the token (simpler than tracking expiry)
-  try {
-    const { accessToken } = await refreshGoogleToken(
-      creds.refreshToken,
-      env.GOOGLE_CLIENT_ID,
-      env.GOOGLE_CLIENT_SECRET
-    )
+  return {
+    credentials: {
+      accessToken: creds.accessToken,
+      refreshToken: creds.refreshToken,
+    },
+    config: {
+      clientId: env.GOOGLE_CLIENT_ID,
+      clientSecret: env.GOOGLE_CLIENT_SECRET,
+    },
+    integrationConfig: integration.config as Record<string, unknown> | null,
+    credentialsId: creds.id,
+  }
+}
 
-    // Update stored access token
-    await db
+/**
+ * Get credentials for Google Ads (includes developer token)
+ */
+async function getAdsCredentials(ctx: ToolContext): Promise<AdsCredentialsResult> {
+  const result = await getGoogleCredentials(ctx, 'google_ads')
+  return {
+    ...result,
+    config: {
+      clientId: ctx.env.GOOGLE_CLIENT_ID,
+      clientSecret: ctx.env.GOOGLE_CLIENT_SECRET,
+      developerToken: ctx.env.GOOGLE_ADS_DEVELOPER_TOKEN,
+    },
+  }
+}
+
+/**
+ * Create a token refresh callback that persists the new token to the database
+ */
+function createTokenRefreshCallback(ctx: ToolContext, credentialsId: string) {
+  return async (newAccessToken: string) => {
+    await ctx.db
       .update(integrationCredentials)
-      .set({ accessToken })
-      .where(eq(integrationCredentials.id, creds.id))
+      .set({ accessToken: newAccessToken })
+      .where(eq(integrationCredentials.id, credentialsId))
+  }
+}
 
-    return { 
-      accessToken,
-      config: integration.config as Record<string, unknown> | null
+/**
+ * Handle Google API errors and convert to IntegrationError
+ */
+function handleGoogleError(error: unknown, provider: GoogleProvider): never {
+  if (error instanceof GoogleApiError) {
+    if (error.isUnauthorized) {
+      throw new IntegrationError(
+        provider,
+        'Authentication failed. Please reconnect the integration.',
+        { action: 'reconnect_integration', provider, status: error.statusCode }
+      )
     }
-  } catch (error) {
+    if (error.isRateLimited) {
+      throw new IntegrationError(
+        provider,
+        'Rate limit exceeded. Please try again later.',
+        { status: error.statusCode }
+      )
+    }
     throw new IntegrationError(
       provider,
-      `Failed to refresh OAuth token: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      `API error (${error.statusCode}): ${error.body}`,
+      { status: error.statusCode }
+    )
+  }
+  if (error instanceof TokenRefreshError) {
+    throw new IntegrationError(
+      provider,
+      `Failed to refresh OAuth token: ${error.details}`,
       { action: 'reconnect_integration', provider }
     )
   }
+  throw error
 }
 
 // Tool executors
@@ -242,11 +281,10 @@ export async function executeGetIntegrations(args: unknown, ctx: ToolContext) {
 
 export async function executeQueryGSC(args: unknown, ctx: ToolContext) {
   const validated = validateArgs(queryGSCArgsSchema, args)
-  const { accessToken, config } = await getOAuthCredentials(ctx, 'google_search_console')
+  const { credentials, config, integrationConfig, credentialsId } = await getGoogleCredentials(ctx, 'google_search_console')
 
-  // Use provided siteUrl or fall back to configured one
-  const siteUrl = validated.siteUrl || (config?.siteUrl as string | undefined)
-  
+  const siteUrl = validated.siteUrl || (integrationConfig?.siteUrl as string | undefined)
+
   if (!siteUrl) {
     throw new IntegrationError(
       'google_search_console',
@@ -255,49 +293,35 @@ export async function executeQueryGSC(args: unknown, ctx: ToolContext) {
     )
   }
 
-  const response = await fetch(
-    `${SEARCH_ANALYTICS_API}/sites/${encodeURIComponent(siteUrl)}/searchAnalytics/query`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        startDate: validated.startDate,
-        endDate: validated.endDate,
-        dimensions: validated.dimensions,
-        rowLimit: validated.rowLimit,
-      }),
+  const client = new SearchConsoleClient(credentials, config)
+  client.onTokenRefresh = createTokenRefreshCallback(ctx, credentialsId)
+
+  try {
+    const result = await client.getSearchPerformance({
+      siteUrl,
+      startDate: validated.startDate,
+      endDate: validated.endDate,
+      dimensions: validated.dimensions,
+      rowLimit: validated.rowLimit,
+    })
+
+    return {
+      siteUrl,
+      rows: result.rows,
+      rowCount: result.rows.length,
+      responseAggregationType: result.responseAggregationType,
     }
-  )
-
-  if (!response.ok) {
-    const errorText = await response.text()
-    throw new IntegrationError(
-      'google_search_console',
-      `GSC API error (${response.status}): ${errorText}`,
-      { status: response.status }
-    )
-  }
-
-  const data = await response.json() as { rows?: unknown[]; responseAggregationType?: string }
-
-  return {
-    siteUrl,
-    rows: data.rows ?? [],
-    rowCount: data.rows?.length ?? 0,
-    responseAggregationType: data.responseAggregationType ?? null,
+  } catch (error) {
+    handleGoogleError(error, 'google_search_console')
   }
 }
 
 export async function executeQueryGA(args: unknown, ctx: ToolContext) {
   const validated = validateArgs(queryGAArgsSchema, args)
-  const { accessToken, config } = await getOAuthCredentials(ctx, 'google_analytics')
+  const { credentials, config, integrationConfig, credentialsId } = await getGoogleCredentials(ctx, 'google_analytics')
 
-  // Use provided propertyId or fall back to configured one
-  const propertyId = validated.propertyId || (config?.propertyId as string | undefined)
-  
+  const propertyId = validated.propertyId || (integrationConfig?.propertyId as string | undefined)
+
   if (!propertyId) {
     throw new IntegrationError(
       'google_analytics',
@@ -306,157 +330,91 @@ export async function executeQueryGA(args: unknown, ctx: ToolContext) {
     )
   }
 
-  const response = await fetch(
-    `${GA4_API_BASE}/${propertyId}:runReport`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        dateRanges: [{ startDate: validated.startDate, endDate: validated.endDate }],
-        metrics: validated.metrics.map((m: string) => ({ name: m })),
-        dimensions: validated.dimensions?.map((d: string) => ({ name: d })) ?? [],
-        limit: validated.limit,
-      }),
+  const client = new AnalyticsClient(credentials, config)
+  client.onTokenRefresh = createTokenRefreshCallback(ctx, credentialsId)
+
+  try {
+    const result = await client.runReport({
+      propertyId,
+      dateRanges: [{ startDate: validated.startDate, endDate: validated.endDate }],
+      metrics: validated.metrics,
+      dimensions: validated.dimensions,
+      limit: validated.limit,
+    })
+
+    return {
+      propertyId,
+      rows: result.rows,
+      rowCount: result.rowCount,
+      totals: result.totals ?? null,
     }
-  )
-
-  if (!response.ok) {
-    const errorText = await response.text()
-    throw new IntegrationError(
-      'google_analytics',
-      `GA4 API error (${response.status}): ${errorText}`,
-      { status: response.status }
-    )
-  }
-
-  const data = await response.json() as { rows?: unknown[]; totals?: unknown; rowCount?: number }
-
-  return {
-    propertyId,
-    rows: data.rows ?? [],
-    rowCount: data.rowCount ?? data.rows?.length ?? 0,
-    totals: data.totals ?? null,
+  } catch (error) {
+    handleGoogleError(error, 'google_analytics')
   }
 }
 
-const GSC_SITES_API = 'https://www.googleapis.com/webmasters/v3/sites'
-const GA_ADMIN_API = 'https://analyticsadmin.googleapis.com/v1beta'
-
 export async function executeListGSCSites(args: unknown, ctx: ToolContext) {
   validateArgs(listGSCSitesArgsSchema, args)
-  const { accessToken, config } = await getOAuthCredentials(ctx, 'google_search_console')
+  const { credentials, config, integrationConfig, credentialsId } = await getGoogleCredentials(ctx, 'google_search_console')
 
-  const response = await fetch(GSC_SITES_API, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  })
+  const client = new SearchConsoleClient(credentials, config)
+  client.onTokenRefresh = createTokenRefreshCallback(ctx, credentialsId)
 
-  if (!response.ok) {
-    const errorText = await response.text()
-    throw new IntegrationError(
-      'google_search_console',
-      `Failed to list GSC sites (${response.status}): ${errorText}`,
-      { status: response.status }
-    )
-  }
+  try {
+    const result = await client.listSites()
 
-  const data = await response.json() as { siteEntry?: Array<{ siteUrl: string; permissionLevel: string }> }
-
-  return {
-    sites: data.siteEntry ?? [],
-    configuredSite: config?.siteUrl ?? null,
+    return {
+      sites: result.sites,
+      configuredSite: integrationConfig?.siteUrl ?? null,
+    }
+  } catch (error) {
+    handleGoogleError(error, 'google_search_console')
   }
 }
 
 export async function executeListGAProperties(args: unknown, ctx: ToolContext) {
   validateArgs(listGAPropertiesArgsSchema, args)
-  const { accessToken, config } = await getOAuthCredentials(ctx, 'google_analytics')
+  const { credentials, config, integrationConfig, credentialsId } = await getGoogleCredentials(ctx, 'google_analytics')
 
-  // First get account summaries
-  const response = await fetch(`${GA_ADMIN_API}/accountSummaries`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  })
+  const client = new AnalyticsClient(credentials, config)
+  client.onTokenRefresh = createTokenRefreshCallback(ctx, credentialsId)
 
-  if (!response.ok) {
-    const errorText = await response.text()
-    throw new IntegrationError(
-      'google_analytics',
-      `Failed to list GA properties (${response.status}): ${errorText}`,
-      { status: response.status }
-    )
-  }
+  try {
+    const result = await client.listProperties()
 
-  const data = await response.json() as {
-    accountSummaries?: Array<{
-      name: string
-      account: string
-      displayName: string
-      propertySummaries?: Array<{
-        property: string
-        displayName: string
-        propertyType: string
-      }>
-    }>
-  }
-
-  // Flatten to list of properties
-  const properties: Array<{ propertyId: string; displayName: string; account: string }> = []
-  for (const account of data.accountSummaries ?? []) {
-    for (const prop of account.propertySummaries ?? []) {
-      properties.push({
-        propertyId: prop.property, // e.g., "properties/123456789"
-        displayName: prop.displayName,
-        account: account.displayName,
-      })
+    return {
+      properties: result.properties,
+      configuredProperty: integrationConfig?.propertyId ?? null,
     }
-  }
-
-  return {
-    properties,
-    configuredProperty: config?.propertyId ?? null,
+  } catch (error) {
+    handleGoogleError(error, 'google_analytics')
   }
 }
 
-const GOOGLE_ADS_API = 'https://googleads.googleapis.com/v18'
-
 export async function executeListGoogleAdsAccounts(args: unknown, ctx: ToolContext) {
   validateArgs(listGoogleAdsAccountsArgsSchema, args)
-  const { accessToken, config } = await getOAuthCredentials(ctx, 'google_ads')
+  const { credentials, config, integrationConfig, credentialsId } = await getAdsCredentials(ctx)
 
-  const response = await fetch(`${GOOGLE_ADS_API}/customers:listAccessibleCustomers`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  })
+  const client = new AdsClient(credentials, config)
+  client.onTokenRefresh = createTokenRefreshCallback(ctx, credentialsId)
 
-  if (!response.ok) {
-    const errorText = await response.text()
-    throw new IntegrationError(
-      'google_ads',
-      `Failed to list Google Ads accounts (${response.status}): ${errorText}`,
-      { status: response.status }
-    )
-  }
+  try {
+    const result = await client.listAccessibleCustomers()
 
-  const data = await response.json() as { resourceNames?: string[] }
-
-  // Extract customer IDs from resource names like "customers/1234567890"
-  const customers = (data.resourceNames ?? []).map(
-    (name: string) => name.replace('customers/', '')
-  )
-
-  return {
-    customers,
-    configuredCustomer: config?.customerId ?? null,
+    return {
+      customers: result.customers,
+      configuredCustomer: integrationConfig?.customerId ?? null,
+    }
+  } catch (error) {
+    handleGoogleError(error, 'google_ads')
   }
 }
 
 export async function executeQueryGoogleAds(args: unknown, ctx: ToolContext) {
   const validated = validateArgs(queryGoogleAdsArgsSchema, args)
-  const { accessToken, config } = await getOAuthCredentials(ctx, 'google_ads')
-  const { env } = ctx
+  const { credentials, config, integrationConfig, credentialsId } = await getAdsCredentials(ctx)
 
-  const customerId = validated.customerId || (config?.customerId as string | undefined)
+  const customerId = validated.customerId || (integrationConfig?.customerId as string | undefined)
 
   if (!customerId) {
     throw new IntegrationError(
@@ -466,38 +424,22 @@ export async function executeQueryGoogleAds(args: unknown, ctx: ToolContext) {
     )
   }
 
-  const response = await fetch(
-    `${GOOGLE_ADS_API}/customers/${customerId}/googleAds:searchStream`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-        'developer-token': env.GOOGLE_ADS_DEVELOPER_TOKEN,
-        'login-customer-id': customerId,
-      },
-      body: JSON.stringify({ query: validated.query }),
+  const client = new AdsClient(credentials, config)
+  client.onTokenRefresh = createTokenRefreshCallback(ctx, credentialsId)
+
+  try {
+    const result = await client.runQuery({
+      customerId,
+      query: validated.query,
+    })
+
+    return {
+      customerId,
+      results: result.results,
+      rowCount: result.rowCount,
     }
-  )
-
-  if (!response.ok) {
-    const errorText = await response.text()
-    throw new IntegrationError(
-      'google_ads',
-      `Google Ads API error (${response.status}): ${errorText}`,
-      { status: response.status }
-    )
-  }
-
-  const data = await response.json() as Array<{ results?: unknown[]; fieldMask?: string }>
-
-  // searchStream returns an array of result batches
-  const allResults = data.flatMap((batch) => batch.results ?? [])
-
-  return {
-    customerId,
-    results: allResults,
-    rowCount: allResults.length,
+  } catch (error) {
+    handleGoogleError(error, 'google_ads')
   }
 }
 
@@ -525,7 +467,6 @@ export async function executeConfigureIntegration(args: unknown, ctx: ToolContex
     )
   }
 
-  // Merge new config with existing
   const newConfig = {
     ...(integration.config as Record<string, unknown> ?? {}),
     ...validated.config,

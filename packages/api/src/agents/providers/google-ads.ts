@@ -2,39 +2,8 @@ import { tool } from 'ai'
 import { z } from 'zod'
 import type { ToolProvider, ProviderContext } from '../interfaces'
 import { toolRegistry } from '../registry'
-
-const GOOGLE_ADS_API = 'https://googleads.googleapis.com/v18'
-
-interface GoogleAdsResponse {
-  results?: unknown[]
-  fieldMask?: string
-}
-
-async function googleAdsFetch(
-  endpoint: string,
-  accessToken: string,
-  developerToken: string,
-  customerId: string,
-  body?: unknown
-): Promise<GoogleAdsResponse[]> {
-  const res = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-      'developer-token': developerToken,
-      'login-customer-id': customerId,
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  })
-
-  if (!res.ok) {
-    const error = await res.text()
-    throw new Error(`Google Ads API error (${res.status}): ${error}`)
-  }
-
-  return res.json() as Promise<GoogleAdsResponse[]>
-}
+import { AdsClient } from '../../integrations/google'
+import type { GoogleCredentials, AdsClientConfig } from '../../integrations/google'
 
 const googleAdsProvider: ToolProvider = {
   id: 'google_ads',
@@ -47,6 +16,24 @@ const googleAdsProvider: ToolProvider = {
   },
 
   getTools(ctx: ProviderContext) {
+    const createClient = async (): Promise<AdsClient> => {
+      const creds = await ctx.getCredentials()
+      if (!creds) throw new Error('Google Ads credentials not found')
+
+      const credentials: GoogleCredentials = {
+        accessToken: creds.accessToken ?? '',
+        refreshToken: creds.refreshToken ?? '',
+      }
+
+      const config: AdsClientConfig = {
+        clientId: creds.clientId ?? '',
+        clientSecret: creds.clientSecret ?? '',
+        developerToken: creds.developerToken ?? '',
+      }
+
+      return new AdsClient(credentials, config)
+    }
+
     return {
       get_campaign_performance: tool({
         description:
@@ -62,29 +49,19 @@ const googleAdsProvider: ToolProvider = {
           limit: z.number().min(1).max(1000).default(50).describe('Max rows to return'),
         }),
         execute: async (params) => {
-          const creds = await ctx.getCredentials()
-          if (!creds) throw new Error('Google Ads credentials not found')
-          const accessToken = creds.accessToken ?? ''
-          const developerToken = creds.developerToken ?? ''
+          const client = await createClient()
+          const result = await client.getCampaignPerformance({
+            customerId: params.customerId,
+            startDate: params.startDate,
+            endDate: params.endDate,
+            campaignStatus: params.campaignStatus,
+            limit: params.limit,
+          })
 
-          let query = `SELECT campaign.name, campaign.status, campaign.id, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions, metrics.average_cpc FROM campaign WHERE segments.date BETWEEN '${params.startDate}' AND '${params.endDate}'`
-
-          if (params.campaignStatus) {
-            query += ` AND campaign.status = '${params.campaignStatus}'`
+          return {
+            campaigns: result.campaigns,
+            rowCount: result.rowCount,
           }
-
-          query += ` ORDER BY metrics.cost_micros DESC LIMIT ${params.limit}`
-
-          const data = await googleAdsFetch(
-            `${GOOGLE_ADS_API}/customers/${params.customerId}/googleAds:searchStream`,
-            accessToken,
-            developerToken,
-            params.customerId,
-            { query }
-          )
-
-          const results = data.flatMap((batch) => batch.results ?? [])
-          return { campaigns: results, rowCount: results.length }
         },
       }),
 
@@ -99,29 +76,19 @@ const googleAdsProvider: ToolProvider = {
           limit: z.number().min(1).max(1000).default(50).describe('Max rows to return'),
         }),
         execute: async (params) => {
-          const creds = await ctx.getCredentials()
-          if (!creds) throw new Error('Google Ads credentials not found')
-          const accessToken = creds.accessToken ?? ''
-          const developerToken = creds.developerToken ?? ''
+          const client = await createClient()
+          const result = await client.getKeywordPerformance({
+            customerId: params.customerId,
+            startDate: params.startDate,
+            endDate: params.endDate,
+            campaignId: params.campaignId,
+            limit: params.limit,
+          })
 
-          let query = `SELECT ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, ad_group_criterion.quality_info.quality_score, campaign.name, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions, metrics.average_cpc FROM keyword_view WHERE segments.date BETWEEN '${params.startDate}' AND '${params.endDate}'`
-
-          if (params.campaignId) {
-            query += ` AND campaign.id = ${params.campaignId}`
+          return {
+            keywords: result.keywords,
+            rowCount: result.rowCount,
           }
-
-          query += ` ORDER BY metrics.impressions DESC LIMIT ${params.limit}`
-
-          const data = await googleAdsFetch(
-            `${GOOGLE_ADS_API}/customers/${params.customerId}/googleAds:searchStream`,
-            accessToken,
-            developerToken,
-            params.customerId,
-            { query }
-          )
-
-          const results = data.flatMap((batch) => batch.results ?? [])
-          return { keywords: results, rowCount: results.length }
         },
       }),
     }
