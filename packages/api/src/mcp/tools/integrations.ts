@@ -43,13 +43,30 @@ const listGSCSitesArgsSchema = z.object({}).describe('No arguments required')
 
 const listGAPropertiesArgsSchema = z.object({}).describe('No arguments required')
 
+const listGoogleAdsAccountsArgsSchema = z.object({}).describe('No arguments required')
+
+const queryGoogleAdsArgsSchema = z.object({
+  customerId: z.string().optional().describe('Google Ads customer ID (without dashes). If not provided, uses the configured account from integration settings.'),
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+    .describe('Start date in YYYY-MM-DD format'),
+  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+    .describe('End date in YYYY-MM-DD format'),
+  query: z.string()
+    .refine(
+      (q) => /^\s*SELECT\s/i.test(q) && !/\b(CREATE|UPDATE|DELETE|REMOVE|INSERT|MUTATE)\b/i.test(q),
+      { message: 'Only read-only SELECT queries are allowed. Mutation operations (CREATE, UPDATE, DELETE, REMOVE) are not permitted.' }
+    )
+    .describe('Read-only Google Ads Query Language (GAQL) SELECT query, e.g., "SELECT campaign.name, metrics.impressions FROM campaign WHERE segments.date DURING LAST_30_DAYS"'),
+})
+
 const configureIntegrationArgsSchema = z.object({
-  provider: z.enum(['google_search_console', 'google_analytics'])
+  provider: z.enum(['google_search_console', 'google_analytics', 'google_ads'])
     .describe('The integration provider to configure'),
   config: z.object({
     siteUrl: z.string().optional().describe('For GSC: the site URL (e.g., "https://example.com" or "sc-domain:example.com")'),
     propertyId: z.string().optional().describe('For GA4: the property ID (e.g., "properties/123456789")'),
     propertyName: z.string().optional().describe('For GA4: human-readable property name'),
+    customerId: z.string().optional().describe('For Google Ads: the customer ID (without dashes)'),
   }).describe('Provider-specific configuration'),
 })
 
@@ -85,6 +102,16 @@ export const integrationTools = [
     'Query Google Analytics 4 data for traffic and conversion insights. Requires Google Analytics integration.',
     queryGAArgsSchema
   ),
+  createMcpTool(
+    'list_google_ads_accounts',
+    'List Google Ads accounts accessible with the connected credentials.',
+    listGoogleAdsAccountsArgsSchema
+  ),
+  createMcpTool(
+    'query_google_ads',
+    'Run a read-only Google Ads Query Language (GAQL) SELECT query for reporting data (performance metrics, spend, conversions, keywords). Requires Google Ads integration.',
+    queryGoogleAdsArgsSchema
+  ),
 ]
 
 // Refresh Google OAuth token
@@ -119,7 +146,7 @@ async function refreshGoogleToken(
 // Helper to get OAuth credentials for a provider (with auto-refresh)
 async function getOAuthCredentials(
   ctx: ToolContext,
-  provider: 'google_search_console' | 'google_analytics'
+  provider: 'google_search_console' | 'google_analytics' | 'google_ads'
 ): Promise<{ accessToken: string; config: Record<string, unknown> | null }> {
   const { db, workspaceId, env } = ctx
 
@@ -136,9 +163,14 @@ async function getOAuthCredentials(
     .limit(1)
 
   if (!integration) {
+    const nameMap: Record<string, string> = {
+      google_search_console: 'Google Search Console',
+      google_analytics: 'Google Analytics',
+      google_ads: 'Google Ads',
+    }
     throw new IntegrationError(
       provider,
-      `Integration not connected. Please connect ${provider === 'google_search_console' ? 'Google Search Console' : 'Google Analytics'} in the Beam dashboard.`,
+      `Integration not connected. Please connect ${nameMap[provider] ?? provider} in the Beam dashboard.`,
       { action: 'connect_integration', provider }
     )
   }
@@ -384,6 +416,88 @@ export async function executeListGAProperties(args: unknown, ctx: ToolContext) {
   return {
     properties,
     configuredProperty: config?.propertyId ?? null,
+  }
+}
+
+const GOOGLE_ADS_API = 'https://googleads.googleapis.com/v18'
+
+export async function executeListGoogleAdsAccounts(args: unknown, ctx: ToolContext) {
+  validateArgs(listGoogleAdsAccountsArgsSchema, args)
+  const { accessToken, config } = await getOAuthCredentials(ctx, 'google_ads')
+
+  const response = await fetch(`${GOOGLE_ADS_API}/customers:listAccessibleCustomers`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new IntegrationError(
+      'google_ads',
+      `Failed to list Google Ads accounts (${response.status}): ${errorText}`,
+      { status: response.status }
+    )
+  }
+
+  const data = await response.json() as { resourceNames?: string[] }
+
+  // Extract customer IDs from resource names like "customers/1234567890"
+  const customers = (data.resourceNames ?? []).map(
+    (name: string) => name.replace('customers/', '')
+  )
+
+  return {
+    customers,
+    configuredCustomer: config?.customerId ?? null,
+  }
+}
+
+export async function executeQueryGoogleAds(args: unknown, ctx: ToolContext) {
+  const validated = validateArgs(queryGoogleAdsArgsSchema, args)
+  const { accessToken, config } = await getOAuthCredentials(ctx, 'google_ads')
+  const { env } = ctx
+
+  const customerId = validated.customerId || (config?.customerId as string | undefined)
+
+  if (!customerId) {
+    throw new IntegrationError(
+      'google_ads',
+      'No customer ID provided and none configured. Please configure a Google Ads account in the integration settings or provide one in the query.',
+      { action: 'configure_integration', provider: 'google_ads' }
+    )
+  }
+
+  const response = await fetch(
+    `${GOOGLE_ADS_API}/customers/${customerId}/googleAds:searchStream`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'developer-token': env.GOOGLE_ADS_DEVELOPER_TOKEN,
+        'login-customer-id': customerId,
+      },
+      body: JSON.stringify({ query: validated.query }),
+    }
+  )
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new IntegrationError(
+      'google_ads',
+      `Google Ads API error (${response.status}): ${errorText}`,
+      { status: response.status }
+    )
+  }
+
+  const data = await response.json() as Array<{ results?: unknown[]; fieldMask?: string }>
+
+  // searchStream returns an array of result batches
+  const allResults = data.flatMap((batch) => batch.results ?? [])
+
+  return {
+    customerId,
+    results: allResults,
+    rowCount: allResults.length,
   }
 }
 

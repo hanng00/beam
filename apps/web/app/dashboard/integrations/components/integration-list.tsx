@@ -32,12 +32,17 @@ const OAUTH_CONFIG = {
       'https://www.googleapis.com/auth/analytics.manage.users.readonly',
     ],
   },
+  google_ads: {
+    authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+    scopes: ['https://www.googleapis.com/auth/adwords.readonly'],
+  },
 } as const
 
 type IntegrationConfig = {
   siteUrl?: string
   propertyId?: string
   propertyName?: string
+  customerId?: string
 }
 
 type Integration = {
@@ -63,6 +68,14 @@ const availableIntegrations = [
     icon: GoogleLogo,
     configKey: 'propertyId' as const,
     configLabel: 'Property',
+  },
+  {
+    id: 'google_ads' as const,
+    name: 'Google Ads',
+    description: 'Campaign performance, ad spend, conversions, and keyword data',
+    icon: GoogleLogo,
+    configKey: 'customerId' as const,
+    configLabel: 'Account',
   },
   {
     id: 'github' as const,
@@ -137,9 +150,14 @@ export function IntegrationList({ workspaceId, connectedIntegrations, googleClie
 
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'https://beam-api.gssonhannes.workers.dev'
-      const endpoint = integration.id === 'google_search_console' 
-        ? 'list_gsc_sites' 
-        : 'list_ga_properties'
+      let endpoint: string
+      if (integration.id === 'google_search_console') {
+        endpoint = 'list_gsc_sites'
+      } else if (integration.id === 'google_analytics') {
+        endpoint = 'list_ga_properties'
+      } else {
+        endpoint = 'list_google_ads_accounts'
+      }
 
       const response = await fetch(`${apiUrl}/mcp/w/${workspaceId}`, {
         method: 'POST',
@@ -169,6 +187,14 @@ export function IntegrationList({ workspaceId, connectedIntegrations, googleClie
           }))
         )
         setSelectedValue(result.configuredSite || '')
+      } else if (integration.id === 'google_ads') {
+        setAvailableOptions(
+          (result.customers || []).map((id: string) => ({
+            value: id,
+            label: id,
+          }))
+        )
+        setSelectedValue(result.configuredCustomer || '')
       } else {
         setAvailableOptions(
           (result.properties || []).map((prop: { propertyId: string; displayName: string; account: string }) => ({
@@ -193,9 +219,14 @@ export function IntegrationList({ workspaceId, connectedIntegrations, googleClie
 
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'https://beam-api.gssonhannes.workers.dev'
-      const configPayload = selectedIntegration.id === 'google_search_console'
-        ? { siteUrl: selectedValue }
-        : { propertyId: selectedValue }
+      let configPayload: Record<string, string>
+      if (selectedIntegration.id === 'google_search_console') {
+        configPayload = { siteUrl: selectedValue }
+      } else if (selectedIntegration.id === 'google_ads') {
+        configPayload = { customerId: selectedValue }
+      } else {
+        configPayload = { propertyId: selectedValue }
+      }
 
       const response = await fetch(`${apiUrl}/mcp/w/${workspaceId}`, {
         method: 'POST',
@@ -240,7 +271,7 @@ export function IntegrationList({ workspaceId, connectedIntegrations, googleClie
           const config = getIntegrationConfig(integration.id)
           const Icon = integration.icon
           const isDisabled = 'disabled' in integration && integration.disabled
-          const configValue = config?.siteUrl || config?.propertyId
+          const configValue = config?.siteUrl || config?.propertyId || config?.customerId
           const isConfigured = !!configValue
 
           return (
@@ -332,8 +363,7 @@ export function IntegrationList({ workspaceId, connectedIntegrations, googleClie
               <div className="text-sm text-destructive">{error}</div>
             ) : availableOptions.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                No {selectedIntegration?.id === 'google_search_console' ? 'sites' : 'properties'} found. 
-                Make sure you have access in your Google account.
+                No options found. Make sure you have access in your Google account.
               </p>
             ) : (
               <Select value={selectedValue} onValueChange={setSelectedValue}>

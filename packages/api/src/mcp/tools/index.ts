@@ -14,6 +14,8 @@ import {
   executeQueryGA,
   executeListGSCSites,
   executeListGAProperties,
+  executeListGoogleAdsAccounts,
+  executeQueryGoogleAds,
   executeConfigureIntegration,
 } from './integrations'
 import { agentTools, executeListAgents, executeRunAgent } from './agents'
@@ -39,9 +41,11 @@ const executors: Record<string, (args: unknown, ctx: ToolContext) => Promise<unk
   get_integrations: executeGetIntegrations,
   list_gsc_sites: executeListGSCSites,
   list_ga_properties: executeListGAProperties,
+  list_google_ads_accounts: executeListGoogleAdsAccounts,
   configure_integration: executeConfigureIntegration,
   query_google_search_console: executeQueryGSC,
   query_google_analytics: executeQueryGA,
+  query_google_ads: executeQueryGoogleAds,
   // Agent tools
   list_available_agents: executeListAgents,
   run_agent: executeRunAgent,

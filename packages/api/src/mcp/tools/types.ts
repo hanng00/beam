@@ -8,6 +8,7 @@ export interface Env {
   ENVIRONMENT: string
   GOOGLE_CLIENT_ID: string
   GOOGLE_CLIENT_SECRET: string
+  GOOGLE_ADS_DEVELOPER_TOKEN: string
 }
 
 export interface ToolContext {

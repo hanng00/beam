@@ -8,6 +8,8 @@ export type IntegrationConfig = {
   // Google Analytics
   propertyId?: string // e.g., "properties/123456789"
   propertyName?: string
+  // Google Ads
+  customerId?: string // e.g., "1234567890" (no dashes)
   // Generic
   [key: string]: unknown
 }

@@ -9,6 +9,7 @@ import { eq, and } from 'drizzle-orm'
 const PROVIDER_TO_INTEGRATION: Record<string, string> = {
   google_search_console: 'google',
   google_analytics: 'google',
+  google_ads: 'google',
 }
 
 /**

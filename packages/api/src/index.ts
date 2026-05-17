@@ -13,6 +13,7 @@ export type Env = {
   // OAuth
   GOOGLE_CLIENT_ID: string
   GOOGLE_CLIENT_SECRET: string
+  GOOGLE_ADS_DEVELOPER_TOKEN: string
   // URLs
   API_BASE_URL?: string
   WEB_BASE_URL?: string
